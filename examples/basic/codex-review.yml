@@ -1,0 +1,11 @@
+# .github/workflows/codex-review.yml
+# Auto-trigger Codex review on new PRs
+name: Codex Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  codex:
+    uses: wajoai/wajo-open-workflows/.github/workflows/codex-review.yml@main

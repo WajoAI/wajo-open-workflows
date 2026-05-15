@@ -1,0 +1,15 @@
+# .github/workflows/ai-fix-deployment.yml
+# Auto-fix Vercel deployment errors
+name: AI Fix Deployment
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  fix:
+    uses: wajoai/wajo-open-workflows/.github/workflows/auto-fix-deployment.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

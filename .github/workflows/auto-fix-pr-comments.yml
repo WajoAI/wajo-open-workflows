@@ -1,0 +1,168 @@
+name: Auto-Fix PR Comments & Test Failures
+
+# Reusable workflow: automatically fixes code review comments from bots
+# or failing CI tests using Claude CLI.
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    if: github.event.repository.full_name == github.repository
+
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_FROM_EVENT: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          CHECK_CONCLUSION: ${{ github.event.check_run.conclusion }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            echo "number=$DISPATCH_PR" >> $GITHUB_OUTPUT
+            echo "mode=$DISPATCH_MODE" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+          elif [[ "$EVENT" == "check_run" ]]; then
+            if [[ "$CHECK_NAME" != "test" || "$CHECK_CONCLUSION" != "failure" ]]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            PR_NUMBER=$(gh api repos/$REPO/commits/$HEAD_SHA/pulls \
+              --jq '.[0].number' 2>/dev/null || echo "")
+            if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
+              echo "No PR found for this commit — skipping"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "mode=tests" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "number=$PR_FROM_EVENT" >> $GITHUB_OUTPUT
+            echo "mode=comments" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Loop guard
+        if: steps.pr.outputs.skip != 'true'
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          LAST_MSG=$(gh api repos/$REPO/pulls/$PR_NUMBER/commits \
+            --jq '.[-1].commit.message' 2>/dev/null || echo "")
+          if [[ "$LAST_MSG" == *"Automated fix by Claude Code"* ]]; then
+            echo "Last commit is from Claude — skipping to prevent loop"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve PR branch ref
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        id: branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          EVENT_REF: ${{ github.event.pull_request.head.ref || github.event.check_run.check_suite.head_branch }}
+        run: |
+          if [[ -n "$EVENT_REF" ]]; then
+            echo "ref=$EVENT_REF" >> $GITHUB_OUTPUT
+          else
+            REF=$(gh api repos/$REPO/pulls/$PR_NUMBER --jq '.head.ref')
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout PR branch
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ steps.branch.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Checkout wajo-open-workflows (for scripts)
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: wajoai/wajo-open-workflows
+          path: .wajo-workflows
+          sparse-checkout: .github/scripts
+
+      - name: Install Claude CLI
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Setup Node.js
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Claude prompt
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        id: prompt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          MODE: ${{ steps.pr.outputs.mode }}
+          CHECK_RUN_ID: ${{ github.event.check_run.id }}
+        run: |
+          PROMPT=$(node .wajo-workflows/.github/scripts/fetch-pr-context.js)
+          if [[ "$PROMPT" == "SKIP" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            printf '%s' "$PROMPT" > /tmp/claude_prompt.txt
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Claude to fix issues
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true' && steps.prompt.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat /tmp/claude_prompt.txt)" \
+            --allowedTools "Read,Write,Edit,Bash,Glob,Grep" \
+            --output-format text
+
+      - name: Commit and push fixes
+        if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.skip != 'true' && steps.prompt.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clean -fd -- node_modules 2>/dev/null || true
+          if [[ -n $(git status -s) ]]; then
+            git add -A -- ':!**/node_modules' ':!**/node_modules/**'
+            git commit -m "fix: address PR review comments / test failures" \
+              -m "Automated fix by Claude Code." \
+              -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+            git push
+            echo "Fixes pushed"
+          else
+            echo "No file changes — nothing to commit"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .wajo-workflows

@@ -1,0 +1,93 @@
+name: TLM Docs Review
+
+# Reusable workflow: analyzes code changes and posts documentation update
+# summaries as commit comments. Does NOT auto-commit docs.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Claude model for docs review
+        type: string
+        default: 'claude-sonnet-4-6'
+      category:
+        description: 'Category to review (auto, all, dev, product, engineering, interfaces)'
+        type: string
+        default: 'auto'
+      category_config:
+        description: 'JSON string of custom file-to-category mapping (optional)'
+        type: string
+        default: ''
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  docs-review:
+    name: Docs Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Checkout wajo-open-workflows (for scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: wajoai/wajo-open-workflows
+          path: .wajo-workflows
+          sparse-checkout: .github/scripts
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate docs summary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CATEGORY: ${{ inputs.category }}
+          TLM_DOCS_MODEL: ${{ inputs.model }}
+          CATEGORY_CONFIG: ${{ inputs.category_config }}
+        run: node .wajo-workflows/.github/scripts/tlm-docs.mjs
+
+      - name: Post commit comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ ! -s /tmp/tlm-docs-comment.md ]; then
+            echo "No docs comment to post."
+            exit 0
+          fi
+          node -e "
+            const body = require('fs').readFileSync('/tmp/tlm-docs-comment.md', 'utf8');
+            fetch('https://api.github.com/repos/' + process.env.REPO + '/commits/' + process.env.SHA + '/comments', {
+              method: 'POST',
+              headers: {
+                Authorization: 'Bearer ' + process.env.GITHUB_TOKEN,
+                'Content-Type': 'application/json',
+                Accept: 'application/vnd.github.v3+json',
+              },
+              body: JSON.stringify({ body }),
+            }).then(async r => {
+              if (!r.ok) {
+                const t = await r.text();
+                console.error('Failed to post comment: GH ' + r.status + ': ' + t);
+                process.exit(1);
+              }
+              console.log('Posted docs comment on commit ' + process.env.SHA);
+            }).catch(e => {
+              console.error('Failed to post comment: ' + e.message);
+              process.exit(1);
+            });
+          "
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .wajo-workflows

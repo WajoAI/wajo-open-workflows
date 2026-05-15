@@ -1,0 +1,22 @@
+# .github/workflows/ai-autofix.yml
+# Auto-fix blocking issues flagged by TLM review
+name: AI Auto-Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to fix
+        required: true
+      issues:
+        description: JSON array of blocking issues
+        required: true
+
+jobs:
+  fix:
+    uses: wajoai/wajo-open-workflows/.github/workflows/tlm-autofix.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      issues: ${{ inputs.issues }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

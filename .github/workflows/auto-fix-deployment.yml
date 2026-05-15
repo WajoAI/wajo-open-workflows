@@ -1,0 +1,74 @@
+name: Auto-Fix Deployment Errors
+
+# Reusable workflow: checks Vercel deployment logs for errors and
+# uses Claude to automatically analyze and fix them.
+
+on:
+  workflow_call:
+    inputs:
+      vercel_team_id:
+        description: Vercel team ID (optional)
+        type: string
+        default: ''
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      VERCEL_TOKEN:
+        required: true
+      VERCEL_PROJECT_ID:
+        required: true
+
+jobs:
+  check-and-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout wajo-open-workflows (for scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: wajoai/wajo-open-workflows
+          path: .wajo-workflows
+          sparse-checkout: .github/scripts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check deployment and auto-fix
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ inputs.vercel_team_id }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node .wajo-workflows/.github/scripts/check-deployment.js
+
+      - name: Commit and push fixes
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Remove checked-out workflow scripts before committing
+          rm -rf .wajo-workflows
+
+          if [[ -n $(git status -s) ]]; then
+            git add -A -- ':!.wajo-workflows'
+            git commit -m "fix: auto-fix deployment errors" \
+              -m "Automatically detected and fixed deployment errors." \
+              -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+            git push
+          else
+            echo "No fixes needed"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .wajo-workflows

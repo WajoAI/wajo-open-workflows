@@ -1,0 +1,13 @@
+# .github/workflows/ai-review.yml
+# AI-powered PR review using Claude
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    uses: wajoai/wajo-open-workflows/.github/workflows/tlm-pr-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

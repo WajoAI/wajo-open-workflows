@@ -1,0 +1,74 @@
+# .github/workflows/ai-full-suite.yml
+# All Wajo AI agents in one file
+name: AI Code Agents
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  check_run:
+    types: [completed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number (for manual autofix)
+        required: false
+      issues:
+        description: JSON issues array (for manual autofix)
+        required: false
+
+jobs:
+  # 1. AI PR Review — runs on every PR push
+  tlm-review:
+    if: github.event_name == 'pull_request'
+    uses: wajoai/wajo-open-workflows/.github/workflows/tlm-pr-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  # 2. Codex Review — triggers on new/ready PRs
+  codex-review:
+    if: >
+      github.event_name == 'pull_request' &&
+      (github.event.action == 'opened' || github.event.action == 'ready_for_review')
+    uses: wajoai/wajo-open-workflows/.github/workflows/codex-review.yml@main
+
+  # 3. Auto-fix bot comments and test failures
+  auto-fix-comments:
+    if: >
+      github.event_name == 'pull_request_review_comment' ||
+      github.event_name == 'pull_request_review' ||
+      github.event_name == 'check_run'
+    uses: wajoai/wajo-open-workflows/.github/workflows/auto-fix-pr-comments.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  # 4. Docs review — runs on push to main
+  docs-review:
+    if: github.event_name == 'push'
+    uses: wajoai/wajo-open-workflows/.github/workflows/tlm-docs.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  # 5. Auto-fix deployment errors — runs on push to main
+  fix-deployment:
+    if: github.event_name == 'push'
+    uses: wajoai/wajo-open-workflows/.github/workflows/auto-fix-deployment.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  # 6. Manual auto-fix (triggered by TLM review or manually)
+  manual-autofix:
+    if: github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
+    uses: wajoai/wajo-open-workflows/.github/workflows/tlm-autofix.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      issues: ${{ inputs.issues }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

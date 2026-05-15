@@ -1,0 +1,109 @@
+name: Request Codex Review
+
+# Reusable workflow: posts "@codex review" on eligible PRs so Codex fires
+# automatically. Works around Codex's paid plan requirement.
+#
+# Guards:
+#   - Skips draft PRs
+#   - Skips PRs from forks (GITHUB_TOKEN has no write permission)
+#   - Skips PRs from bots (prevents feedback loops)
+#   - Idempotent: won't double-post if already requested
+
+on:
+  workflow_call: {}
+
+jobs:
+  request-review:
+    name: Request Codex review
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Resolve PR number
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_FROM_EVENT: ${{ github.event.pull_request.number }}
+          PR_FROM_INPUT: ${{ inputs.pr_number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            PR_NUMBER="$PR_FROM_INPUT"
+            PR_DATA=$(gh api repos/$REPO/pulls/$PR_NUMBER)
+            PR_HEAD_REPO=$(echo "$PR_DATA" | jq -r '.head.repo.full_name')
+            PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.user.login')
+            IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              echo "Skipping: PR #$PR_NUMBER is a draft"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          else
+            PR_NUMBER="$PR_FROM_EVENT"
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "head_repo=$PR_HEAD_REPO" >> $GITHUB_OUTPUT
+          echo "author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Skip forks
+        id: fork-check
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          if [[ "${{ steps.resolve.outputs.head_repo }}" != "${{ github.repository }}" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: PR is from a fork"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip bot authors
+        id: bot-check
+        if: steps.resolve.outputs.skip != 'true' && steps.fork-check.outputs.skip != 'true'
+        run: |
+          AUTHOR="${{ steps.resolve.outputs.author }}"
+          if [[ "$AUTHOR" == *"[bot]"* ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: PR opened by bot ($AUTHOR)"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for existing Codex request
+        id: idempotency-check
+        if: steps.resolve.outputs.skip != 'true' && steps.fork-check.outputs.skip != 'true' && steps.bot-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          COUNT=$(gh api repos/$REPO/issues/$PR_NUMBER/comments \
+            --jq '[.[] | select(.body | test("@codex review"; "i"))] | length')
+          if [[ "$COUNT" -gt "0" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: @codex review already posted"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post @codex review
+        if: |
+          steps.resolve.outputs.skip != 'true' &&
+          steps.fork-check.outputs.skip != 'true' &&
+          steps.bot-check.outputs.skip != 'true' &&
+          steps.idempotency-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          gh pr comment $PR_NUMBER --repo $REPO --body "@codex review"
+          echo "Posted @codex review on PR #$PR_NUMBER"

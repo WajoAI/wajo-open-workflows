@@ -1,0 +1,160 @@
+name: TLM PR Review
+
+# Reusable workflow: AI-powered code review on pull requests.
+# Posts structured review comments with verdict, blocking issues, and notes.
+# Optionally triggers auto-fix workflow for blocking issues.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Claude model for review
+        type: string
+        default: 'claude-opus-4-6'
+      max_diff_lines:
+        description: Max diff lines to send to Claude
+        type: number
+        default: 2500
+      extra_review_instructions:
+        description: Additional review instructions appended to the TLM prompt
+        type: string
+        default: ''
+      project_context:
+        description: Project-specific context (tech stack, conventions, etc.)
+        type: string
+        default: ''
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  tlm-review:
+    name: TLM Review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Checkout wajo-open-workflows (for scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: wajoai/wajo-open-workflows
+          path: .wajo-workflows
+          sparse-checkout: |
+            .github/scripts
+            .github/TLM_LEARNINGS.md
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run TLM review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          TLM_MODEL: ${{ inputs.model }}
+          MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra_review_instructions }}
+          PROJECT_CONTEXT: ${{ inputs.project_context }}
+        run: node .wajo-workflows/.github/scripts/tlm-review.mjs
+
+      - name: Update TLM learnings
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          BLOCKING_COUNT=$(node -e "
+            const fs = require('fs');
+            try {
+              const issues = JSON.parse(fs.readFileSync('/tmp/tlm-blocking-issues.json', 'utf8'));
+              console.log(issues.length);
+            } catch { console.log(0); }
+          ")
+          if [ "$BLOCKING_COUNT" -eq 0 ]; then
+            echo "No blocking issues this run — skipping learnings update."
+            exit 0
+          fi
+
+          # Check if TLM_LEARNINGS.md exists in the caller's repo
+          if [ ! -f .github/TLM_LEARNINGS.md ]; then
+            echo "No .github/TLM_LEARNINGS.md in caller repo — skipping learnings update."
+            exit 0
+          fi
+
+          export CURRENT_LEARNINGS=$(cat .github/TLM_LEARNINGS.md 2>/dev/null || echo "")
+
+          NEW_PATTERNS=$(node -e "
+            const https = require('https');
+            const issues = JSON.parse(require('fs').readFileSync('/tmp/tlm-blocking-issues.json','utf8'));
+            const current = process.env.CURRENT_LEARNINGS || '';
+
+            const prompt = 'You are updating a TLM learnings file for a code reviewer.\n\n' +
+              'These blocking issues were found in this review run:\n' +
+              JSON.stringify(issues, null, 2) + '\n\n' +
+              'Current learnings file:\n' + current.slice(0, 3000) + '\n\n' +
+              'Identify patterns that are NOT already covered in the learnings file. ' +
+              'If there are new patterns, return a markdown section to append (starting with ## [date] — [pattern]). ' +
+              'If nothing new, return exactly: NOTHING';
+
+            const body = JSON.stringify({
+              model: 'claude-sonnet-4-6',
+              max_tokens: 800,
+              messages: [{ role: 'user', content: prompt }]
+            });
+
+            const options = {
+              hostname: 'api.anthropic.com',
+              path: '/v1/messages',
+              method: 'POST',
+              headers: {
+                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+                'content-length': Buffer.byteLength(body)
+              }
+            };
+
+            const req = https.request(options, res => {
+              let data = '';
+              res.on('data', d => data += d);
+              res.on('end', () => {
+                try {
+                  const text = JSON.parse(data).content[0].text.trim();
+                  console.log(text);
+                } catch(e) {
+                  console.log('NOTHING');
+                }
+              });
+            });
+            req.on('error', () => console.log('NOTHING'));
+            req.setTimeout(30000, () => { req.destroy(); console.log('NOTHING'); });
+            req.write(body);
+            req.end();
+          ")
+
+          if [ "$NEW_PATTERNS" = "NOTHING" ]; then
+            echo "No new patterns to add."
+            exit 0
+          fi
+
+          echo "" >> .github/TLM_LEARNINGS.md
+          echo "$NEW_PATTERNS" >> .github/TLM_LEARNINGS.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/TLM_LEARNINGS.md
+          git commit -m "chore: update TLM learnings with new patterns [skip ci]"
+          git push
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .wajo-workflows
