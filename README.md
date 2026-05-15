@@ -36,6 +36,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
+
 jobs:
   review:
     uses: wajoai/wajo-open-workflows/.github/workflows/tlm-pr-review.yml@main
@@ -47,6 +52,8 @@ YAML
 ### 3. Done
 
 Next PR triggers the review. No dependencies to install, no scripts to maintain.
+
+> **Note:** The `permissions` block is required. Reusable workflows can only use permissions that the caller grants. If your org uses restrictive default token permissions, the caller must explicitly grant `pull-requests: write`, `contents: write`, and `actions: write`.
 
 ---
 
@@ -63,6 +70,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
+
 jobs:
   review:
     uses: wajoai/wajo-open-workflows/.github/workflows/tlm-pr-review.yml@main
@@ -76,6 +88,7 @@ jobs:
     with:
       model: claude-opus-4-6          # default; or claude-sonnet-4-6 for speed
       max_diff_lines: 2500             # max lines of diff sent to Claude
+      autofix_workflow: ai-autofix.yml # trigger auto-fix on blocking issues
       extra_review_instructions: |     # project-specific review rules
         - All endpoints must have auth
         - No inline SQL queries
@@ -89,7 +102,7 @@ jobs:
 
 ### TLM Auto-Fix
 
-Fixes blocking issues from TLM review. Usually triggered automatically by TLM Review, but can be called manually.
+Fixes blocking issues from TLM review. Usually triggered automatically by TLM Review (if `autofix_workflow` is set), but can be called manually.
 
 ```yaml
 # .github/workflows/ai-autofix.yml
@@ -103,6 +116,11 @@ on:
       issues:
         description: JSON array of blocking issues
         required: true
+
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
 
 jobs:
   fix:
@@ -128,6 +146,9 @@ name: AI Docs Review
 on:
   push:
     branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
   docs:
@@ -161,6 +182,9 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
+permissions:
+  pull-requests: write
+
 jobs:
   codex:
     uses: wajoai/wajo-open-workflows/.github/workflows/codex-review.yml@main
@@ -185,6 +209,10 @@ on:
   check_run:
     types: [completed]
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   fix:
     uses: wajoai/wajo-open-workflows/.github/workflows/auto-fix-pr-comments.yml@main
@@ -206,6 +234,9 @@ name: AI Fix Deployment
 on:
   push:
     branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
   fix:
@@ -259,10 +290,23 @@ After each review run with blocking issues, the workflow appends new patterns to
 
 ## How It Works
 
-Your repo has thin caller workflows (3-10 lines). The actual logic runs from this repo's reusable workflows. Scripts are fetched at runtime by checking out `wajoai/wajo-open-workflows`.
+Your repo has thin caller workflows (5-15 lines). The actual logic runs from this repo's reusable workflows. Scripts are fetched at runtime by checking out `wajoai/wajo-open-workflows`.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for flow diagrams.
 See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md) for all configuration options.
+
+## Permissions
+
+Reusable workflows can only use permissions the caller explicitly grants. Add a `permissions` block to your caller workflow:
+
+```yaml
+permissions:
+  pull-requests: write   # post review comments
+  contents: write        # push fixes, update learnings
+  actions: write         # trigger auto-fix workflows
+```
+
+If your GitHub org uses restrictive default token permissions (`read` only), the caller **must** include this block or the workflow will fail with `startup_failure`.
 
 ## Requirements
 

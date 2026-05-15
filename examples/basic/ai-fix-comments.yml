@@ -10,6 +10,10 @@ on:
   check_run:
     types: [completed]
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   fix:
     uses: wajoai/wajo-open-workflows/.github/workflows/auto-fix-pr-comments.yml@main

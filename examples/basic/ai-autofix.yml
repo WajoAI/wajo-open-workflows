@@ -12,6 +12,11 @@ on:
         description: JSON array of blocking issues
         required: true
 
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
+
 jobs:
   fix:
     uses: wajoai/wajo-open-workflows/.github/workflows/tlm-autofix.yml@main

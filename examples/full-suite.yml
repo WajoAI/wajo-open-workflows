@@ -22,6 +22,11 @@ on:
         description: JSON issues array (for manual autofix)
         required: false
 
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
+
 jobs:
   # 1. AI PR Review — runs on every PR push
   tlm-review:

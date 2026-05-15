@@ -6,6 +6,9 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
+permissions:
+  pull-requests: write
+
 jobs:
   codex:
     uses: wajoai/wajo-open-workflows/.github/workflows/codex-review.yml@main

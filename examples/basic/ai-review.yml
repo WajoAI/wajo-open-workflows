@@ -6,6 +6,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  pull-requests: write
+  contents: write
+  actions: write
+
 jobs:
   review:
     uses: wajoai/wajo-open-workflows/.github/workflows/tlm-pr-review.yml@main
