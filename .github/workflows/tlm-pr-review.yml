@@ -23,6 +23,10 @@ on:
         description: Project-specific context (tech stack, conventions, etc.)
         type: string
         default: ''
+      autofix_workflow:
+        description: Filename of the autofix workflow in your repo (e.g. ai-autofix.yml). Empty to disable.
+        type: string
+        default: ''
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -64,6 +68,7 @@ jobs:
           MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
           EXTRA_INSTRUCTIONS: ${{ inputs.extra_review_instructions }}
           PROJECT_CONTEXT: ${{ inputs.project_context }}
+          AUTOFIX_WORKFLOW: ${{ inputs.autofix_workflow }}
         run: node .wajo-workflows/.github/scripts/tlm-review.mjs
 
       - name: Update TLM learnings
@@ -92,9 +97,12 @@ jobs:
 
           export CURRENT_LEARNINGS=$(cat .github/TLM_LEARNINGS.md 2>/dev/null || echo "")
 
-          NEW_PATTERNS=$(node -e "
+          # Write output to a temp file to avoid shell expansion issues with
+          # backticks, dollar signs, etc. in Claude's markdown output
+          node -e "
             const https = require('https');
-            const issues = JSON.parse(require('fs').readFileSync('/tmp/tlm-blocking-issues.json','utf8'));
+            const fs = require('fs');
+            const issues = JSON.parse(fs.readFileSync('/tmp/tlm-blocking-issues.json','utf8'));
             const current = process.env.CURRENT_LEARNINGS || '';
 
             const prompt = 'You are updating a TLM learnings file for a code reviewer.\n\n' +
@@ -129,28 +137,31 @@ jobs:
               res.on('end', () => {
                 try {
                   const text = JSON.parse(data).content[0].text.trim();
-                  console.log(text);
+                  fs.writeFileSync('/tmp/tlm-new-patterns.md', text);
                 } catch(e) {
-                  console.log('NOTHING');
+                  fs.writeFileSync('/tmp/tlm-new-patterns.md', 'NOTHING');
                 }
               });
             });
-            req.on('error', () => console.log('NOTHING'));
-            req.setTimeout(30000, () => { req.destroy(); console.log('NOTHING'); });
+            req.on('error', () => fs.writeFileSync('/tmp/tlm-new-patterns.md', 'NOTHING'));
+            req.setTimeout(30000, () => { req.destroy(); fs.writeFileSync('/tmp/tlm-new-patterns.md', 'NOTHING'); });
             req.write(body);
             req.end();
-          ")
+          "
+
+          NEW_PATTERNS=$(cat /tmp/tlm-new-patterns.md 2>/dev/null || echo "NOTHING")
 
           if [ "$NEW_PATTERNS" = "NOTHING" ]; then
             echo "No new patterns to add."
             exit 0
           fi
 
+          # Use cat to append — avoids shell expansion of special characters
           echo "" >> .github/TLM_LEARNINGS.md
-          echo "$NEW_PATTERNS" >> .github/TLM_LEARNINGS.md
+          cat /tmp/tlm-new-patterns.md >> .github/TLM_LEARNINGS.md
 
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/TLM_LEARNINGS.md
           git commit -m "chore: update TLM learnings with new patterns [skip ci]"
           git push

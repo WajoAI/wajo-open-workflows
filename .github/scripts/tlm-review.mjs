@@ -16,12 +16,19 @@ import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Load accumulated learnings so the reviewer knows what patterns to catch
+// Load accumulated learnings — prefer the caller's repo-specific learnings,
+// fall back to the wajo-open-workflows template
 let TLM_LEARNINGS = '';
+const callerLearnings = join(process.cwd(), '.github/TLM_LEARNINGS.md');
+const fallbackLearnings = join(__dirname, '../TLM_LEARNINGS.md');
 try {
-  TLM_LEARNINGS = readFileSync(join(__dirname, '../TLM_LEARNINGS.md'), 'utf8');
+  TLM_LEARNINGS = readFileSync(callerLearnings, 'utf8');
 } catch {
-  // File may not exist yet; proceed without it
+  try {
+    TLM_LEARNINGS = readFileSync(fallbackLearnings, 'utf8');
+  } catch {
+    // No learnings file found; proceed without it
+  }
 }
 
 const MODEL = process.env.TLM_MODEL || 'claude-opus-4-6';
@@ -30,6 +37,8 @@ const TLM_MARKER = '\u{1F3D7}\uFE0F **TLM Review**';
 
 const EXTRA_INSTRUCTIONS = process.env.EXTRA_INSTRUCTIONS || '';
 const PROJECT_CONTEXT = process.env.PROJECT_CONTEXT || '';
+// The caller's autofix workflow filename (if they have one). Empty = skip trigger.
+const AUTOFIX_WORKFLOW = process.env.AUTOFIX_WORKFLOW || '';
 
 const { GITHUB_TOKEN, ANTHROPIC_API_KEY, REPO, PR_NUMBER } = process.env;
 
@@ -255,18 +264,21 @@ function formatComment(review, prNumber, headSha) {
 // -- Trigger auto-fix ---------------------------------------------------------
 
 async function triggerAutoFix(prNumber, issues) {
+  if (!AUTOFIX_WORKFLOW) {
+    console.log(`  Auto-fix trigger skipped (AUTOFIX_WORKFLOW not configured)`);
+    return;
+  }
   try {
-    await ghPost(`/repos/${REPO}/actions/workflows/tlm-autofix.yml/dispatches`, {
+    await ghPost(`/repos/${REPO}/actions/workflows/${AUTOFIX_WORKFLOW}/dispatches`, {
       ref: 'main',
       inputs: {
         pr_number: String(prNumber),
         issues: JSON.stringify(issues),
       },
     });
-    console.log(`  Triggered auto-fix for PR #${prNumber}`);
+    console.log(`  Triggered auto-fix for PR #${prNumber} via ${AUTOFIX_WORKFLOW}`);
   } catch (e) {
-    // Auto-fix workflow may not exist in the caller's repo — that's OK
-    console.log(`  Auto-fix trigger skipped (workflow may not exist): ${e.message}`);
+    console.log(`  Auto-fix trigger failed: ${e.message}`);
   }
 }
 

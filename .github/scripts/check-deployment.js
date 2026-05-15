@@ -181,8 +181,14 @@ async function applyFixes(fixes) {
           }
           break;
         case 'run_command':
-          console.log(`  Running: ${fix.command}`);
-          execSync(fix.command, { stdio: 'inherit' });
+          // Security: do NOT execute arbitrary commands from LLM output.
+          // Only allow safe npm install commands.
+          if (/^npm\s+install\b/.test(fix.command)) {
+            console.log(`  Running: ${fix.command}`);
+            execSync(fix.command, { stdio: 'inherit', timeout: 60000 });
+          } else {
+            console.log(`  Skipped unsafe command: ${fix.command}`);
+          }
           break;
         default:
           console.log(`  Unknown fix type: ${fix.type}`);

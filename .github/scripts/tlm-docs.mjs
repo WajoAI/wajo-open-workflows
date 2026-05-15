@@ -13,7 +13,8 @@ import { fileURLToPath } from 'url';
 import { dirname as pathDirname, join } from 'path';
 
 const __dirname = pathDirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '../..');
+// ROOT must be the caller's repo root (process.cwd()), NOT the wajo-open-workflows checkout
+const ROOT = process.cwd();
 
 const MODEL = process.env.TLM_DOCS_MODEL || 'claude-sonnet-4-6';
 const MAX_DIFF_LINES = parseInt(process.env.MAX_DIFF_LINES || '2500', 10);
